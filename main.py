@@ -25,8 +25,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
+import bcrypt
 import motor.motor_asyncio
-from passlib.context import CryptContext
 import jwt
 from itsdangerous import URLSafeTimedSerializer
 import smtplib
@@ -80,17 +80,20 @@ storage_col  = db["bot_storage"]
 # ─────────────────────────────────────────────────────────────
 # SECURITY HELPERS
 # ─────────────────────────────────────────────────────────────
-pwd_ctx        = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme  = HTTPBearer(auto_error=False)
 url_serializer = URLSafeTimedSerializer(SECRET_KEY)
 
 
 def hash_pw(p: str) -> str:
-    return pwd_ctx.hash(p)
+    # truncate to 72 bytes — bcrypt hard limit
+    return bcrypt.hashpw(p[:72].encode(), bcrypt.gensalt()).decode()
 
 
 def check_pw(plain: str, hashed: str) -> bool:
-    return pwd_ctx.verify(plain, hashed)
+    try:
+        return bcrypt.checkpw(plain[:72].encode(), hashed.encode())
+    except Exception:
+        return False
 
 
 def make_token(data: dict) -> str:
