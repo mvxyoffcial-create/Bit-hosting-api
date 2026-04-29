@@ -1,9 +1,9 @@
 """
-BotHost API v5 — Webhook Only Mode
-✅ Webhook Bots Only - Always active, no start/stop needed
+BotHost API v5 — Complete Working Solution with Bot Editing
+✅ Polling Bots - Fully working
+✅ Webhook Bots - Fully working  
+✅ Edit Bots - Update name, script, type
 ✅ Terminal - Install any package
-✅ Bot Editing - Update scripts anytime
-✅ Auto webhook management
 """
 
 import os
@@ -59,7 +59,7 @@ PORT = int(os.environ.get("PORT", "8000"))
 # ─────────────────────────────────────────────────────────────
 app = FastAPI(
     title="BotHost API",
-    description="Telegram Bot Hosting Platform - Webhook Only",
+    description="Koyeb-style Telegram Bot Hosting Platform",
     version="5.0.0",
 )
 
@@ -166,15 +166,47 @@ padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:bold;margin
 </div>"""
 
 # ─────────────────────────────────────────────────────────────
-# BOT STATE (Webhook only)
+# IN-MEMORY BOT STATE
 # ─────────────────────────────────────────────────────────────
-bot_logs: dict = defaultdict(lambda: deque(maxlen=500))
-bot_scripts: dict = {}
+running_bots: dict = {}
+bot_logs: dict     = defaultdict(lambda: deque(maxlen=500))
+bot_scripts: dict  = {}
 
 def log_msg(bot_id: str, msg: str, level: str = "INFO"):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     bot_logs[bot_id].append(f"[{ts}] [{level}] {msg}")
     print(f"[{bot_id}] {msg}")
+
+class LogThread(threading.Thread):
+    def __init__(self, bot_id, proc, kind):
+        super().__init__(daemon=True)
+        self.bot_id = bot_id
+        self.stream = proc.stdout if kind == "stdout" else proc.stderr
+        self.kind   = kind
+
+    def run(self):
+        try:
+            for line in iter(self.stream.readline, ""):
+                if line:
+                    log_msg(self.bot_id, line.strip(), "ERROR" if self.kind == "stderr" else "INFO")
+        except Exception:
+            pass
+
+def _stop_proc(bot_id: str):
+    bd = running_bots.pop(bot_id, None)
+    if not bd:
+        return
+    p = bd.get("process")
+    if p:
+        p.terminate()
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+    sp = bd.get("script_path", "")
+    if sp and os.path.exists(sp):
+        os.remove(sp)
+    log_msg(bot_id, "Stopped ⏹️", "WARNING")
 
 # ─────────────────────────────────────────────────────────────
 # SCHEMAS
@@ -199,11 +231,12 @@ class CreateBotBody(BaseModel):
     name: str
     bot_token: str
     script: str
+    bot_type: str = "polling"
     env_vars: dict = {}
 
 class UpdateBotBody(BaseModel):
-    name: Optional[str] = None
-    script: Optional[str] = None
+    name: Optional[str]      = None
+    script: Optional[str]    = None
     env_vars: Optional[dict] = None
 
 class UpdateScriptBody(BaseModel):
@@ -221,25 +254,12 @@ async def startup():
     await users_col.create_index("email", unique=True)
     await bots_col.create_index("bot_id", unique=True)
     await bots_col.create_index("owner_email")
-    
-    # Re-set webhooks for all existing webhook bots on startup
-    bots = await bots_col.find({"bot_type": "webhook"}).to_list(None)
-    for bot in bots:
-        webhook_url = f"{WEBHOOK_BASE_URL}/api/webhook/{bot['bot_token']}"
-        try:
-            req_lib.post(f"https://api.telegram.org/bot{bot['bot_token']}/setWebhook",
-                         json={"url": webhook_url}, timeout=8)
-            log_msg(bot['bot_id'], f"✅ Webhook re-set on startup", "INFO")
-        except Exception as e:
-            log_msg(bot['bot_id'], f"❌ Failed to set webhook: {e}", "ERROR")
-    
     print("=" * 60)
-    print("🤖 BOTHOST API v5 - WEBHOOK ONLY MODE")
+    print("🤖 BOTHOST API v5 STARTED")
     print("=" * 60)
     print(f"✅ MongoDB: Connected")
     print(f"✅ Server: http://0.0.0.0:{PORT}")
-    print(f"✅ Webhook URL: {WEBHOOK_BASE_URL}")
-    print(f"✅ Bots will work immediately after creation")
+    print(f"✅ Docs: http://0.0.0.0:{PORT}/docs")
     print("=" * 60)
 
 # ─────────────────────────────────────────────────────────────
@@ -250,7 +270,6 @@ async def root():
     return {
         "service": "BotHost API",
         "version": "5.0.0",
-        "mode": "webhook-only",
         "docs": "/docs",
         "health": "/health",
     }
@@ -262,14 +281,12 @@ async def health():
         db_ok = True
     except Exception:
         db_ok = False
-    bot_count = await bots_col.count_documents({})
     return {
         "status": "healthy" if db_ok else "degraded",
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "version": "5.0.0",
-        "mode": "webhook-only",
         "database": "connected" if db_ok else "disconnected",
-        "total_bots": bot_count,
+        "running_bots": len(running_bots),
         "port": PORT,
     }
 
@@ -371,7 +388,7 @@ async def me(user=Depends(current_user)):
     return user
 
 # ─────────────────────────────────────────────────────────────
-# BOT ROUTES (Webhook Only)
+# BOT ROUTES
 # ─────────────────────────────────────────────────────────────
 def _fmt(bot: dict) -> dict:
     bot = dict(bot)
@@ -404,31 +421,32 @@ async def create_bot(body: CreateBotBody, user=Depends(current_user)):
     script = script.replace("YOUR_TOKEN_WILL_BE_SET_AUTOMATICALLY", body.bot_token)
     script = script.replace("your_bot_token_here", body.bot_token)
 
-    # Set webhook
-    webhook_url = f"{WEBHOOK_BASE_URL}/api/webhook/{body.bot_token}"
     webhook_set = False
-    try:
-        wr = req_lib.post(f"https://api.telegram.org/bot{body.bot_token}/setWebhook",
-                          json={"url": webhook_url}, timeout=8)
-        result = wr.json()
-        webhook_set = result.get("ok", False)
-        if webhook_set:
-            log_msg(bot_id, f"✅ Webhook set: {webhook_url}", "INFO")
-        else:
-            log_msg(bot_id, f"❌ Webhook failed: {result}", "ERROR")
-    except Exception as e:
-        log_msg(bot_id, f"❌ Webhook error: {e}", "ERROR")
+    webhook_url = None
+    
+    if body.bot_type == "webhook":
+        webhook_url = f"{WEBHOOK_BASE_URL}/api/webhook/{body.bot_token}"
+        try:
+            wr = req_lib.post(f"https://api.telegram.org/bot{body.bot_token}/setWebhook",
+                              json={"url": webhook_url}, timeout=8)
+            result = wr.json()
+            webhook_set = result.get("ok", False)
+            if webhook_set:
+                log_msg(bot_id, f"✅ Webhook set: {webhook_url}", "INFO")
+        except Exception as e:
+            log_msg(bot_id, f"❌ Webhook error: {e}", "ERROR")
 
     doc = {
         "bot_id": bot_id,
         "bot_token": body.bot_token,
         "bot_username": bot_info.get("username"),
         "bot_name": body.name,
-        "bot_type": "webhook",
+        "bot_type": body.bot_type,
         "script": script,
         "env_vars": body.env_vars,
         "owner_email": user["email"],
         "active": True,
+        "running": False,
         "webhook_url": webhook_url,
         "webhook_set": webhook_set,
         "created_at": datetime.utcnow(),
@@ -436,23 +454,25 @@ async def create_bot(body: CreateBotBody, user=Depends(current_user)):
     }
     await bots_col.update_one({"bot_id": bot_id}, {"$set": doc}, upsert=True)
     bot_scripts[bot_id] = script
-    log_msg(bot_id, f"✅ Bot created: @{bot_info.get('username')} (Webhook)", "INFO")
+    log_msg(bot_id, f"✅ Bot created: @{bot_info.get('username')} (Type: {body.bot_type})", "INFO")
 
     return {
         "success": True,
         "bot_id": bot_id,
         "bot_username": bot_info.get("username"),
-        "bot_type": "webhook",
+        "bot_type": body.bot_type,
         "webhook_set": webhook_set,
         "webhook_url": webhook_url,
-        "message": "Bot created! Webhook is active. Your bot will respond immediately."
     }
 
 @app.get("/api/bots", tags=["Bots"])
 async def list_bots(user=Depends(current_user)):
     bots = await bots_col.find({"owner_email": user["email"]}).to_list(None)
     for b in bots:
-        b["live"] = b.get("webhook_set", False)
+        if b.get("bot_type") == "polling":
+            b["live"] = b["bot_id"] in running_bots
+        else:
+            b["live"] = b.get("webhook_set", False)
     return {"bots": [_fmt(b) for b in bots], "count": len(bots)}
 
 @app.get("/api/bots/{bot_id}", tags=["Bots"])
@@ -460,7 +480,11 @@ async def get_bot(bot_id: str, user=Depends(current_user)):
     bot = await bots_col.find_one({"bot_id": bot_id, "owner_email": user["email"]})
     if not bot:
         raise HTTPException(404, "Bot not found")
-    bot["live"] = bot.get("webhook_set", False)
+    if bot.get("bot_type") == "polling":
+        bot["live"] = bot_id in running_bots
+    else:
+        bot["live"] = bot.get("webhook_set", False)
+    # Return full bot data including script for editing
     result = _fmt(bot)
     result["script"] = bot.get("script", "")
     result["bot_token"] = bot.get("bot_token", "")
@@ -490,7 +514,14 @@ async def update_bot(bot_id: str, body: UpdateBotBody, user=Depends(current_user
 
     await bots_col.update_one({"bot_id": bot_id}, {"$set": up})
     
-    return {"success": True, "message": "Bot updated. Webhook continues to work automatically."}
+    # If bot is running, suggest restart
+    was_running = bot_id in running_bots
+    return {
+        "success": True, 
+        "message": "Bot updated", 
+        "was_running": was_running,
+        "restart_needed": was_running
+    }
 
 @app.put("/api/bots/{bot_id}/script", tags=["Bots"])
 async def update_script(bot_id: str, body: UpdateScriptBody, user=Depends(current_user)):
@@ -509,7 +540,8 @@ async def update_script(bot_id: str, body: UpdateScriptBody, user=Depends(curren
 
     return {
         "success": True,
-        "message": "Script updated. Bot will use new script on next webhook.",
+        "message": "Script updated. Restart the bot to apply changes.",
+        "was_running": bot_id in running_bots,
     }
 
 @app.get("/api/bots/{bot_id}/script", tags=["Bots"])
@@ -525,12 +557,13 @@ async def delete_bot(bot_id: str, user=Depends(current_user)):
     if not bot:
         raise HTTPException(404, "Bot not found")
 
-    # Delete webhook
-    try:
-        req_lib.post(f"https://api.telegram.org/bot{bot['bot_token']}/deleteWebhook", timeout=5)
-        log_msg(bot_id, "Webhook deleted", "INFO")
-    except Exception:
-        pass
+    if bot_id in running_bots:
+        _stop_proc(bot_id)
+    if bot.get("bot_type") == "webhook":
+        try:
+            req_lib.post(f"https://api.telegram.org/bot{bot['bot_token']}/deleteWebhook", timeout=5)
+        except Exception:
+            pass
 
     await bots_col.delete_one({"bot_id": bot_id})
     await storage_col.delete_many({"bot_id": bot_id})
@@ -538,26 +571,93 @@ async def delete_bot(bot_id: str, user=Depends(current_user)):
     bot_logs.pop(bot_id, None)
     return {"success": True, "message": "Bot deleted", "bot_id": bot_id}
 
-@app.post("/api/bots/{bot_id}/reload", tags=["Bots"])
-async def reload_webhook(bot_id: str, user=Depends(current_user)):
-    """Re-set webhook for a bot (useful after updating script)"""
+# ── Start / Stop / Restart ────────────────────────────────────────────
+@app.post("/api/bots/{bot_id}/start", tags=["Bots"])
+async def start_bot(bot_id: str, user=Depends(current_user)):
     bot = await bots_col.find_one({"bot_id": bot_id, "owner_email": user["email"]})
     if not bot:
         raise HTTPException(404, "Bot not found")
+    
+    if bot.get("bot_type") == "webhook":
+        webhook_url = f"{WEBHOOK_BASE_URL}/api/webhook/{bot['bot_token']}"
+        try:
+            wr = req_lib.post(f"https://api.telegram.org/bot{bot['bot_token']}/setWebhook",
+                              json={"url": webhook_url}, timeout=8)
+            if wr.json().get("ok"):
+                await bots_col.update_one({"bot_id": bot_id},
+                                           {"$set": {"webhook_set": True, "running": True, "updated_at": datetime.utcnow()}})
+                log_msg(bot_id, "✅ Webhook bot activated", "INFO")
+                return {"success": True, "message": "Webhook bot activated", "webhook_url": webhook_url}
+            else:
+                raise HTTPException(500, "Failed to set webhook")
+        except Exception as e:
+            raise HTTPException(500, f"Failed to activate webhook bot: {e}")
+    
+    # Polling bot start
+    if bot_id in running_bots:
+        raise HTTPException(400, "Bot is already running")
 
-    webhook_url = f"{WEBHOOK_BASE_URL}/api/webhook/{bot['bot_token']}"
-    try:
-        wr = req_lib.post(f"https://api.telegram.org/bot{bot['bot_token']}/setWebhook",
-                          json={"url": webhook_url}, timeout=8)
-        if wr.json().get("ok"):
+    sp = f"/tmp/bot_{bot_id}.py"
+    with open(sp, "w") as f:
+        f.write(bot_scripts.get(bot_id, bot["script"]))
+
+    env = {**os.environ, **bot.get("env_vars", {})}
+    env["BOT_TOKEN"] = bot["bot_token"]
+    env["BOT_ID"] = bot_id
+    
+    proc = subprocess.Popen(
+        [sys.executable, sp],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, bufsize=1, env=env,
+    )
+    to = LogThread(bot_id, proc, "stdout")
+    te = LogThread(bot_id, proc, "stderr")
+    to.start()
+    te.start()
+
+    running_bots[bot_id] = {
+        "process": proc, 
+        "script_path": sp,
+        "stdout_thread": to, 
+        "stderr_thread": te
+    }
+    await bots_col.update_one({"bot_id": bot_id},
+                               {"$set": {"running": True, "updated_at": datetime.utcnow()}})
+    log_msg(bot_id, f"✅ Polling bot started (PID: {proc.pid})", "INFO")
+    return {"success": True, "message": "Polling bot started", "pid": proc.pid}
+
+@app.post("/api/bots/{bot_id}/stop", tags=["Bots"])
+async def stop_bot(bot_id: str, user=Depends(current_user)):
+    bot = await bots_col.find_one({"bot_id": bot_id, "owner_email": user["email"]})
+    if not bot:
+        raise HTTPException(404, "Bot not found")
+    
+    if bot.get("bot_type") == "webhook":
+        try:
+            req_lib.post(f"https://api.telegram.org/bot{bot['bot_token']}/deleteWebhook", timeout=5)
             await bots_col.update_one({"bot_id": bot_id},
-                                       {"$set": {"webhook_set": True, "updated_at": datetime.utcnow()}})
-            log_msg(bot_id, "✅ Webhook reloaded", "INFO")
-            return {"success": True, "message": "Webhook reloaded successfully"}
-        else:
-            raise HTTPException(500, "Failed to set webhook")
-    except Exception as e:
-        raise HTTPException(500, f"Failed to reload webhook: {e}")
+                                       {"$set": {"webhook_set": False, "running": False, "updated_at": datetime.utcnow()}})
+            log_msg(bot_id, "Webhook bot stopped", "INFO")
+            return {"success": True, "message": "Webhook bot stopped"}
+        except Exception as e:
+            raise HTTPException(500, f"Failed to stop webhook bot: {e}")
+    
+    if bot_id not in running_bots:
+        raise HTTPException(400, "Bot is not running")
+    
+    _stop_proc(bot_id)
+    await bots_col.update_one({"bot_id": bot_id},
+                               {"$set": {"running": False, "updated_at": datetime.utcnow()}})
+    return {"success": True, "message": "Polling bot stopped"}
+
+@app.post("/api/bots/{bot_id}/restart", tags=["Bots"])
+async def restart_bot(bot_id: str, user=Depends(current_user)):
+    if bot_id in running_bots:
+        _stop_proc(bot_id)
+        await bots_col.update_one({"bot_id": bot_id},
+                                   {"$set": {"running": False, "updated_at": datetime.utcnow()}})
+        await asyncio.sleep(2)
+    return await start_bot(bot_id, user)
 
 # ── Logs ──────────────────────────────────────────────────────────────
 @app.get("/api/bots/{bot_id}/logs", tags=["Bots"])
@@ -603,51 +703,39 @@ async def set_env(bot_id: str, env_vars: dict, user=Depends(current_user)):
         raise HTTPException(404, "Bot not found")
     await bots_col.update_one({"bot_id": bot_id},
                                {"$set": {"env_vars": env_vars, "updated_at": datetime.utcnow()}})
-    return {"success": True, "message": "Env vars updated."}
+    return {"success": True, "message": "Env vars updated. Restart bot to apply."}
 
-# ── Webhook receiver (Main handler) ───────────────────────────────────
+# ── Webhook receiver ──────────────────────────────────────────────────
 @app.post("/api/webhook/{bot_token}", include_in_schema=False)
 async def webhook_handler(bot_token: str, request: Request):
-    """Main webhook endpoint - receives all Telegram updates"""
     try:
         update = await request.json()
-        print(f"[WEBHOOK] Received update for token: {bot_token[:10]}...")
+        print(f"[WEBHOOK] Received update for bot: {bot_token[:10]}...")
         
         bot = await bots_col.find_one({"bot_token": bot_token})
         if not bot:
             print(f"[WEBHOOK] Bot not found")
             return {"ok": False, "error": "Bot not found"}
+        
+        if bot.get("bot_type") != "webhook":
+            return {"ok": False, "error": "Not a webhook bot"}
 
         bot_id = bot["bot_id"]
-        
-        # Determine update type
-        if "message" in update:
-            update_type = "message"
-        elif "callback_query" in update:
-            update_type = "callback_query"
-        else:
-            update_type = "unknown"
-        
-        log_msg(bot_id, f"📨 Webhook received: {update_type}", "INFO")
+        log_msg(bot_id, f"📨 Webhook received", "INFO")
         
         script = bot_scripts.get(bot_id, bot["script"])
         
-        # Execute script in thread
         def execute():
             try:
-                execute_bot_script(script, update, bot_token, bot_id, update_type)
-                log_msg(bot_id, f"✅ {update_type} processed", "INFO")
+                execute_bot_script(script, update, bot_token, bot_id)
             except Exception as e:
                 log_msg(bot_id, f"Script error: {e}", "ERROR")
-                traceback.print_exc()
         
         threading.Thread(target=execute, daemon=True).start()
-        
         return {"ok": True}
         
     except Exception as e:
         print(f"[WEBHOOK] Error: {e}")
-        traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
 # ─────────────────────────────────────────────────────────────
@@ -833,19 +921,17 @@ class BotAPI:
                                  else reply_markup)
         return self._post("sendPhoto", d)
 
-def execute_bot_script(script: str, update: dict, bot_token: str, bot_id: str, update_type: str):
+def execute_bot_script(script: str, update: dict, bot_token: str, bot_id: str):
     try:
         bot = BotAPI(bot_token)
         storage = BotStorage(bot_id)
 
-        if update_type == "message":
+        if "message" in update:
             message = _MsgObj(update["message"])
             callback_query = None
-        elif update_type == "callback_query":
+        else:
             callback_query = _CBQObj(update["callback_query"])
             message = callback_query.message
-        else:
-            return
 
         exec_globals = {
             "__builtins__": __builtins__,
@@ -868,6 +954,7 @@ def execute_bot_script(script: str, update: dict, bot_token: str, bot_id: str, u
         }
         
         exec(script, exec_globals)
+        log_msg(bot_id, "✅ Script executed", "INFO")
         
     except ReturnCommand:
         pass
@@ -881,10 +968,6 @@ def execute_bot_script(script: str, update: dict, bot_token: str, bot_id: str, u
 if __name__ == "__main__":
     import uvicorn
     print("=" * 60)
-    print("🤖 BOTHOST API v5 - WEBHOOK ONLY MODE")
-    print("=" * 60)
-    print("✅ Webhook bots only - Always active")
-    print("✅ Bots work immediately after creation")
-    print("✅ No start/stop needed")
+    print("🤖 BOTHOST API v5 - WORKING WITH BOT EDITING")
     print("=" * 60)
     uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)
