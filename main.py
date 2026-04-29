@@ -36,15 +36,15 @@ from email.mime.multipart import MIMEMultipart
 # ─────────────────────────────────────────────────────────────
 # ENV CONFIG  — set these on your VPS / hosting panel
 # ─────────────────────────────────────────────────────────────
-MONGO_URI        = os.environ.get("MONGO_URI",        "mongodb://localhost:27017")
-DB_NAME          = os.environ.get("DB_NAME",          "bothost")
-SECRET_KEY       = os.environ.get("SECRET_KEY",       "change-me-super-secret-2024!")
-JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "24"))
+MONGO_URI        = "mongodb+srv://Zerobothost:zero8907@cluster0.szwdcyb.mongodb.net/?appName=Cluster0"
+DB_NAME          = "bothost"
+SECRET_KEY       = "rashmi@8907"
+JWT_EXPIRE_HOURS = "24"
 
-SMTP_HOST        = os.environ.get("SMTP_HOST",  "smtp.gmail.com")
-SMTP_PORT        = int(os.environ.get("SMTP_PORT", "587"))
-SMTP_USER        = os.environ.get("SMTP_USER",  "")
-SMTP_PASS        = os.environ.get("SMTP_PASS",  "")
+SMTP_HOST        = "smtp.gmail.com"
+SMTP_PORT        = "587"
+SMTP_USER        = "natravelsoffcail@gmail.com"
+SMTP_PASS        = "qpha qkbn rytr ncvu"
 FROM_EMAIL       = os.environ.get("FROM_EMAIL", SMTP_USER)
 FRONTEND_URL     = os.environ.get("FRONTEND_URL",     "http://localhost:8000")
 WEBHOOK_BASE_URL = os.environ.get("WEBHOOK_BASE_URL", FRONTEND_URL)
