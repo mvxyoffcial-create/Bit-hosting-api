@@ -39,10 +39,10 @@ from email.mime.multipart import MIMEMultipart
 MONGO_URI        = "mongodb+srv://Zerobothost:zero8907@cluster0.szwdcyb.mongodb.net/?appName=Cluster0"
 DB_NAME          = "bothost"
 SECRET_KEY       = "rashmi@8907"
-JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", 24))
+JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "24"))
 
 SMTP_HOST        = "smtp.gmail.com"
-SMTP_PORT        = "587"
+SMTP_PORT        = 587
 SMTP_USER        = "natravelsoffcail@gmail.com"
 SMTP_PASS        = "qpha qkbn rytr ncvu"
 FROM_EMAIL       = os.environ.get("FROM_EMAIL", SMTP_USER)
@@ -143,13 +143,20 @@ def send_email(to: str, subject: str, html: str):
 
 def _verify_html(link: str, name: str) -> str:
     return f"""<div style="font-family:Arial,sans-serif;max-width:580px;margin:auto;
-background:#0f172a;color:#f1f5f9;padding:36px;border-radius:14px">
-<h2 style="color:#6366f1">🤖 BotHost — Verify Your Email</h2>
-<p>Hi <b>{name}</b>, thanks for signing up!</p>
-<a href="{link}" style="display:inline-block;background:#6366f1;color:#fff;
-padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:bold;margin:16px 0">
+background:#ffffff;color:#1a1a1a;padding:36px;border-radius:14px;border:1px solid #e2e8f0">
+<div style="text-align:center;margin-bottom:24px">
+  <div style="font-size:48px">✅</div>
+  <h2 style="color:#16a34a;margin:12px 0 4px">BotHost — Verify Your Email</h2>
+</div>
+<p style="color:#374151">Hi <b>{name}</b>, thanks for signing up!</p>
+<p style="color:#374151">Click the button below to verify your email address and activate your account.</p>
+<div style="text-align:center;margin:28px 0">
+<a href="{link}" style="display:inline-block;background:#16a34a;color:#ffffff;
+padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px">
 ✅ Verify My Account</a>
-<p style="color:#64748b;font-size:12px">Expires in 24 h. Didn't sign up? Ignore this.</p>
+</div>
+<p style="color:#6b7280;font-size:12px;text-align:center;margin-top:24px">
+Expires in 24 hours. Didn't sign up? You can safely ignore this email.</p>
 </div>"""
 
 
@@ -332,16 +339,16 @@ async def verify_email(token: str):
         raise HTTPException(404, "User not found")
 
     return HTMLResponse("""<!DOCTYPE html>
-<html><body style="margin:0;font-family:Arial,sans-serif;background:#0f172a;color:#f1f5f9;
+<html><head><meta charset="UTF-8"><title>Email Verified</title></head>
+<body style="margin:0;font-family:Arial,sans-serif;background:#f0fdf4;
 display:flex;align-items:center;justify-content:center;height:100vh">
-<div style="text-align:center;background:#1e293b;padding:48px 56px;border-radius:16px">
-  <div style="font-size:60px">✅</div>
-  <h1 style="color:#22c55e;margin:16px 0 8px">Email Verified!</h1>
-  <p style="color:#94a3b8">Your BotHost account is active. You can now log in.</p>
-  <a href="/docs" style="display:inline-block;margin-top:20px;background:#6366f1;color:#fff;
-     padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold">
-    Open API Docs →
-  </a>
+<div style="text-align:center;background:#ffffff;padding:48px 56px;border-radius:16px;
+box-shadow:0 4px 24px rgba(22,163,74,0.12);border:1px solid #bbf7d0;max-width:420px">
+  <div style="font-size:64px;margin-bottom:8px">✅</div>
+  <h1 style="color:#16a34a;margin:12px 0 8px;font-size:28px">Email Verified!</h1>
+  <p style="color:#374151;margin:0;font-size:15px">
+    Your BotHost account is now active.<br>You can close this tab and log in.
+  </p>
 </div></body></html>""")
 
 
