@@ -39,7 +39,7 @@ from email.mime.multipart import MIMEMultipart
 MONGO_URI        = "mongodb+srv://Zerobothost:zero8907@cluster0.szwdcyb.mongodb.net/?appName=Cluster0"
 DB_NAME          = "bothost"
 SECRET_KEY       = "rashmi@8907"
-JWT_EXPIRE_HOURS = "24"
+JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", 24))
 
 SMTP_HOST        = "smtp.gmail.com"
 SMTP_PORT        = "587"
