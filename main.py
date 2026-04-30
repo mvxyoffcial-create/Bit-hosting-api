@@ -28,10 +28,13 @@ import random
 import re
 import json
 import time
+import inspect
+import functools
+import itertools
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Any, Union, Dict, List
 
 # ── Persistent HTTP session for ALL Telegram API calls ──────────────────────
 import requests as req_lib
@@ -873,6 +876,7 @@ class BotAPI:
     def getChat(self, chat_id): return self._get("getChat", {"chat_id": chat_id})
 
 _BASE_EXEC_GLOBALS = {
+    # ── Core & Standard Library ──
     "__builtins__":         __builtins__,
     "ReturnCommand":        ReturnCommand,
     "InlineKeyboardMarkup": InlineKeyboardMarkup,
@@ -886,7 +890,29 @@ _BASE_EXEC_GLOBALS = {
     "json":                 json,
     "os":                   os,
     "sys":                  sys,
+    
+    # ── Advanced Modules ──
+    "inspect":              inspect,
+    "functools":            functools,
+    "itertools":            itertools,
+    
+    # ── Attribute Functions & Introspection ──
+    "getattr":              getattr,
+    "setattr":              setattr,
+    "hasattr":              hasattr,
+    "delattr":              delattr,
+    "dir":                  dir,
+    "vars":                 vars,
+    "type":                 type,
+    "isinstance":           isinstance,
+    "issubclass":           issubclass,
+    "callable":             callable,
+    "help":                 help,
+    "id":                   id,
+    "repr":                 repr,
+    "str":                  str,
 }
+
 
 def execute_bot_script(code, script: str, update: dict, bot_token: str, bot_id: str, env_vars: dict = None):
     try:
